@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>🎧 WebRTC Audio Debug Client</title>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    .log { white-space: pre-line; background: #f0f0f0; padding: 10px; margin-top: 10px; max-height: 200px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <h2>🎧 WebRTC Audio Debug</h2>
+
+  <div>
+    <label>User ID: <input type="text" id="userId" value="userA"></label><br><br>
+    <label>Room ID: <input type="text" id="roomId" value="room1"></label><br><br>
+    <button id="connectBtn">🎤 Conectar</button>
+    <button id="toggleMicBtn">🔇 Toggle Mic</button>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+  <script>
+    const servers = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    };
+
+    let stompClient, peerConnection, localStream;
+    let micOn = true;
+
+    const logDiv = document.getElementById("log");
+    const userIdInput = document.getElementById("userId");
+    const roomIdInput = document.getElementById("roomId");
+    const connectBtn = document.getElementById("connectBtn");
+    const toggleMicBtn = document.getElementById("toggleMicBtn");
+
+    const log = (msg) => {
+      console.log(msg);
+      logDiv.textContent += `\n${msg}`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+    };
+
+    connectBtn.addEventListener('click', async () => {
+      const userId = userIdInput.value;
+      const roomId = roomIdInput.value;
+      log(`🟢 Conectando como ${userId} en sala ${roomId}`);
+
+      const socket = new SockJS('http://localhost:8080/ws');
+      stompClient = Stomp.over(socket);
+      stompClient.debug = null;
+      stompClient.connect({}, async () => {
+        log("🌐 WebSocket conectado");
+
+        stompClient.subscribe(`/topic/room/${roomId}`, async (msg) => {
+          const signal = JSON.parse(msg.body);
+          if (signal.userId === userId) return;
+          log("📡 Señal recibida: " + JSON.stringify(signal.payload));
+
+          if (signal.payload.type === "offer") {
+            await createPeer(userId, roomId);
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.payload));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            sendSignal(roomId, userId, peerConnection.localDescription);
+          } else if (signal.payload.type === "answer") {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.payload));
+          } else if (signal.payload.candidate) {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(signal.payload));
+          }
+        });
+
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              channelCount: 2,
+              sampleRate: 48000,
+              sampleSize: 16
+            }
+          });
+          log("🎤 Micrófono activo con optimización de calidad");
+        } catch (err) {
+          log("❌ Error accediendo al micrófono: " + err);
+          return;
+        }
+
+        await createPeer(userId, roomId);
+        let offer = await peerConnection.createOffer();
+        offer.sdp = offer.sdp.replace(/a=fmtp:111 .*/g, 'a=fmtp:111 minptime=10; useinbandfec=1; stereo=1; maxaveragebitrate=128000')
+                               .replace(/m=audio .*? UDP\/TLS\/RTP\/SAVPF ([\d ]+)/, 'm=audio 9 UDP/TLS/RTP/SAVPF 111');
+        await peerConnection.setLocalDescription(offer);
+        sendSignal(roomId, userId, offer);
+      });
+    });
+
+    toggleMicBtn.addEventListener('click', () => {
+      if (!localStream) return;
+      micOn = !micOn;
+      localStream.getAudioTracks()[0].enabled = micOn;
+      log(micOn ? "🎙️ Micrófono encendido" : "🔇 Micrófono apagado");
+    });
+
+    async function createPeer(userId, roomId) {
+      if (peerConnection) return;
+
+      log("🔧 Creando conexión P2P...");
+      peerConnection = new RTCPeerConnection(servers);
+
+      localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          log("📤 Enviando ICE candidate...");
+          sendSignal(roomId, userId, event.candidate);
+        }
+      };
+
+      peerConnection.ontrack = (event) => {
+        log("🔊 Audio remoto recibido");
+        const audio = new Audio();
+        audio.srcObject = event.streams[0];
+        audio.autoplay = true;
+        audio.play().catch(err => log("❌ No se pudo reproducir: " + err));
+      };
+
+      peerConnection.addEventListener('connectionstatechange', () => {
+        log("🔁 Estado de conexión: " + peerConnection.connectionState);
+      });
+
+      setInterval(async () => {
+        const stats = await peerConnection.getStats();
+        stats.forEach(report => {
+          if (report.type === "inbound-rtp" && report.kind === "audio") {
+            log(`📈 Jitter: ${report.jitter}, Pérdida: ${report.packetsLost}`);
+          }
+          if (report.type === "remote-inbound-rtp" && report.kind === "audio") {
+            log(`📊 RTT: ${report.roundTripTime}`);
+          }
+          if (report.type === "track" && report.kind === "audio") {
+            log(`🔉 Energía: ${report.totalAudioEnergy}`);
+          }
+        });
+      }, 3000);
+
+      const audioSender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
+      if (audioSender) {
+        const params = audioSender.getParameters();
+        if (!params.encodings) params.encodings = [{}];
+        params.encodings[0].priority = "high";
+        params.encodings[0].maxBitrate = 128000;
+        audioSender.setParameters(params).catch(err => log("⚠️ No se pudo establecer prioridad: " + err));
+      }
+    }
+
+    function sendSignal(roomId, userId, payload) {
+      log("📤 Enviando señal: " + JSON.stringify(payload));
+      stompClient.send(`/app/room/${roomId}`, {}, JSON.stringify({
+        userId,
+        roomId,
+        payload
+      }));
+    }
+  </script>
+</body>
+</html>

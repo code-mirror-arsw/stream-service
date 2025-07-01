@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>🎙️ Admin WebRTC</title>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    .log { white-space: pre-line; background: #f0f0f0; padding: 10px; margin-top: 10px; max-height: 200px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <h2>🎙️ Admin WebRTC Debug</h2>
+
+  <div>
+    <label>Admin ID: <input type="text" id="userId" value="admin"></label><br><br>
+    <label>Participants (comma separated): <input type="text" id="participants" value="userB"></label><br><br>
+    <button id="startBtn">🟢 Iniciar Sala</button>
+    <button id="connectBtn">🔗 Conectar</button>
+    <button id="toggleMicBtn">🔇 Micrófono</button>
+    <p id="roomIdText"></p>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+  <script>
+    let stompClient, peerConnection, localStream;
+    let micOn = true;
+    let currentRoomId;
+
+    const servers = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    };
+
+    const logDiv = document.getElementById("log");
+    const log = (msg) => {
+      console.log(msg);
+      logDiv.textContent += `\n${msg}`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+    };
+
+    document.getElementById("startBtn").addEventListener("click", async () => {
+      const userId = document.getElementById("userId").value;
+      const participants = document.getElementById("participants").value.split(",").map(p => p.trim());
+
+      const res = await fetch("http://localhost:8080/room/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interviewerId: userId, participants })
+      });
+
+      const data = await res.json();
+      currentRoomId = data.roomId || data.id || "error";
+      document.getElementById("roomIdText").textContent = "Room ID: " + currentRoomId;
+      log("🆔 Sala creada con ID: " + currentRoomId);
+    });
+
+    document.getElementById("connectBtn").addEventListener("click", async () => {
+      const userId = document.getElementById("userId").value;
+      const roomId = currentRoomId;
+
+      const socket = new SockJS("http://localhost:8080/ws");
+      stompClient = Stomp.over(socket);
+      stompClient.debug = null; // Disable verbose logs
+      stompClient.connect({}, async () => {
+        log("🌐 WebSocket conectado");
+
+        stompClient.subscribe(`/topic/room/${roomId}`, async (msg) => {
+          const signal = JSON.parse(msg.body);
+          if (signal.userId === userId) return;
+
+          log("📡 Señal recibida: " + JSON.stringify(signal.payload));
+
+          if (signal.payload.type === "offer") {
+            await createPeer(roomId, userId);
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.payload));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            sendSignal(roomId, userId, peerConnection.localDescription);
+          } else if (signal.payload.type === "answer") {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.payload));
+          } else if (signal.payload.candidate) {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(signal.payload));
+          }
+        });
+
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              channelCount: 2,
+              sampleRate: 48000,
+              sampleSize: 16
+            }
+          });
+          log("🎤 Micrófono activo con optimización de calidad");
+        } catch (err) {
+          log("❌ Error accediendo al micrófono: " + err);
+          return;
+        }
+
+        await createPeer(roomId, userId);
+        let offer = await peerConnection.createOffer();
+
+        // Forzar uso de OPUS con alta calidad
+        offer.sdp = offer.sdp.replace(/a=fmtp:111 .*/g, 'a=fmtp:111 minptime=10; useinbandfec=1; stereo=1; maxaveragebitrate=128000');
+        await peerConnection.setLocalDescription(offer);
+        sendSignal(roomId, userId, offer);
+      });
+    });
+
+    document.getElementById("toggleMicBtn").addEventListener("click", () => {
+      if (!localStream) return;
+      micOn = !micOn;
+      localStream.getAudioTracks()[0].enabled = micOn;
+      log(micOn ? "🎙️ Mic ON" : "🔇 Mic OFF");
+    });
+
+    async function createPeer(roomId, userId) {
+      if (peerConnection) return;
+
+      log("🔧 Creando conexión P2P...");
+      peerConnection = new RTCPeerConnection(servers);
+
+      localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      peerConnection.onicecandidate = (e) => {
+        if (e.candidate) {
+          log("📤 Enviando ICE candidate...");
+          sendSignal(roomId, userId, e.candidate);
+        }
+      };
+
+      peerConnection.ontrack = (e) => {
+        log("🔊 Audio remoto recibido");
+        const audio = new Audio();
+        audio.srcObject = e.streams[0];
+        audio.autoplay = true;
+        audio.play().catch(err => log("❌ No se pudo reproducir: " + err));
+      };
+
+      setInterval(async () => {
+        const stats = await peerConnection.getStats();
+        stats.forEach(report => {
+          if (report.type === "inbound-rtp" && report.kind === "audio") {
+            log(`📈 Jitter: ${report.jitter}, Pérdida: ${report.packetsLost}`);
+          }
+        });
+      }, 3000);
+    }
+
+    function sendSignal(roomId, userId, payload) {
+      log("📤 Enviando señal: " + JSON.stringify(payload));
+      stompClient.send(`/app/room/${roomId}`, {}, JSON.stringify({ userId, roomId, payload }));
+    }
+  </script>
+</body>
+</html>

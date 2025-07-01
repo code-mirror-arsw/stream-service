@@ -1,0 +1,17 @@
+server:
+  port: 8084
+
+
+spring:
+  application:
+    name: AUDIO-SERVICE
+
+doc:
+  api:
+    path: /doc/api
+    title: audio API
+    description: Documentation for the audio API
+    version: 1.0.0
+
+
+
