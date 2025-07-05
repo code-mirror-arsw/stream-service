@@ -27,7 +27,7 @@ public class RoomServiceImpl implements RoomService{
         room.setParticipants(participants);
         room.setCreationTime(Instant.now());
 
-        rooms.put(roomId, room);
+        rooms.put(interviewerId, room);
         return roomId;
     }
 
@@ -44,6 +44,11 @@ public class RoomServiceImpl implements RoomService{
         List<String> users = new ArrayList<>(room.getParticipants());
         users.add(room.getInterviewerId());
         return users;
+    }
+
+    @Override
+    public String getRoomIdByInterview(String interviewId) {
+        return rooms.get(interviewId).getRoomId();
     }
 
     @Override

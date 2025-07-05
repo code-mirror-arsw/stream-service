@@ -11,6 +11,8 @@ public interface RoomService {
 
     List<String> getUsersInRoom(String roomId);
 
+    String getRoomIdByInterview(String interviewId);
+
     boolean isUserAllowed(String roomId, String userId);
 
     void deleteRoom(String roomId);

@@ -25,12 +25,6 @@ public class SignalingController {
             @DestinationVariable String roomId,
             @Payload SignalMessage signal
     ) {
-        System.out.println("📥 Mensaje recibido de usuario: " + signal.getUserId());
-        System.out.println("📨 Reenviando señal a /topic/room/" + roomId);
-        System.out.println("🧾 Payload: " + signal.getPayload());
-
-
-
         messagingTemplate.convertAndSend("/topic/room/" + roomId, signal);
     }
 }

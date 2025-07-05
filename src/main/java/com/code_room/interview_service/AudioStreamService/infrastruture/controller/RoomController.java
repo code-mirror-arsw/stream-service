@@ -5,8 +5,10 @@ import com.code_room.interview_service.AudioStreamService.domain.ports.RoomServi
 import com.code_room.interview_service.AudioStreamService.infrastruture.controller.dto.RoomRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Map;
 
@@ -30,6 +32,16 @@ public class RoomController {
                     ,"error", e.getMessage())));
 
         }
+    }
+
+    @GetMapping("/{interviewId}")
+    public ResponseEntity<?> findRoom(@PathVariable String interviewId) {
+        String roomId = roomService.getRoomIdByInterview(interviewId);
+        if (roomId == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Room not started for interview " + interviewId);
+        }
+        return ResponseEntity.ok(Map.of("roomId", roomId));
     }
 
 
