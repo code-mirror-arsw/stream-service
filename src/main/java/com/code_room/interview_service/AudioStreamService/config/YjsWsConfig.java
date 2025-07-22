@@ -26,7 +26,7 @@ public class YjsWsConfig implements WebSocketConfigurer {
         };
 
         registry.addHandler(handler, "/yjs/{roomId}")
-                 .setAllowedOriginPatterns("http://localhost:5173", "http://localhost:5000")
+                 .setAllowedOriginPatterns("http://localhost:5173", "https://victorious-water-0ec758310.2.azurestaticapps.net/")
                 .setAllowedOriginPatterns("*")                 // ← comodín para pruebas
                 .setHandshakeHandler(hsHandler);
     }
