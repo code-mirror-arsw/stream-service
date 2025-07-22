@@ -9,9 +9,6 @@ server:
 spring:
   application:
     name: AUDIO-SERVICE
-  redis:
-    host: 20.106.32.210
-    port: 6379
 
 doc:
   api:
